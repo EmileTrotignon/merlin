@@ -503,11 +503,18 @@ let dispatch pipeline (type a) : a Query_protocol.t -> a =
       Locate.get_doc ~config
         ~env ~local_defs ~comments ~pos (`User_input path)
 
-  | Locate (patho, ml_or_mli, pos) ->
+  | Locate (patho, ml_or_mli, pos') ->
     let typer = Mpipeline.typer_result pipeline in
     let local_defs = Mtyper.get_typedtree typer in
-    let pos = Mpipeline.get_lexing_pos pipeline pos in
-    let env, _ = Mbrowse.leaf_node (Mtyper.node_at typer pos) in
+    let pos = Mpipeline.get_lexing_pos pipeline pos' in
+    let env =
+      match pos' with
+      | `End -> (
+          match Mtyper.get_typedtree typer with
+          | `Implementation structure -> structure.str_final_env
+          | `Interface signature -> signature.sig_final_env)
+      | _ -> fst (Mbrowse.leaf_node (Mtyper.node_at typer pos))
+    in
     let path =
       match patho with
       | Some p -> p

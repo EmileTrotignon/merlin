@@ -39,8 +39,8 @@ let id_of_patt = function
   | { pat_desc = Tpat_var (id, _) ; _ } -> Some id
   | _ -> None
 
-let mk ?(children=[]) ~location ~deprecated outline_kind outline_type id =
-  { Query_protocol.  outline_kind; outline_type; location; children;
+let mk ~is_public ?(children=[]) ~location ~deprecated outline_kind outline_type id =
+  { Query_protocol. is_public; outline_kind; outline_type; location; children;
     outline_name = Ident.name id ; deprecated }
 
 let get_class_field_desc_infos = function
@@ -54,8 +54,10 @@ let outline_type ~env typ =
     Type_utils.print_type_with_decl ~verbosity:(Mconfig.Verbosity.Lvl 0) env ppf typ);
   Some (to_string ())
 
-let rec summarize node =
+let rec summarize is_public_of_loc node =
   let location = node.t_loc in
+  let is_public = is_public_of_loc location in
+  let mk = mk ~is_public in
   match node.t_node with
   | Value_binding vb      ->
     let deprecated = Type_utils.is_deprecated vb.vb_attributes in
@@ -71,7 +73,7 @@ let rec summarize node =
     Some (mk ~location ~deprecated `Value typ vd.val_id)
 
   | Module_declaration md ->
-    let children = get_mod_children node in
+    let children = get_mod_children is_public_of_loc node in
     begin match md.md_id with
     | None -> None
     | Some id ->
@@ -80,7 +82,7 @@ let rec summarize node =
     end
 
   | Module_binding mb ->
-    let children = get_mod_children node in
+    let children = get_mod_children is_public_of_loc node in
     begin match mb.mb_id with
     | None -> None
     | Some id ->
@@ -89,7 +91,7 @@ let rec summarize node =
     end
 
   | Module_type_declaration mtd ->
-    let children = get_mod_children node in
+    let children = get_mod_children is_public_of_loc node in
     let deprecated = Type_utils.is_deprecated mtd.mtd_attributes in
     Some (mk ~deprecated ~children ~location `Modtype None mtd.mtd_id)
 
@@ -113,16 +115,16 @@ let rec summarize node =
     in
     let deprecated = Type_utils.is_deprecated td.typ_attributes in
     Some (mk ~children ~location ~deprecated `Type None td.typ_id)
-
   | Type_extension te ->
     let name = Path.name te.tyext_path in
     let children =
       List.filter_map (Lazy.force node.t_children) ~f:(fun x ->
-        summarize x >>| fun x -> { x with Query_protocol.outline_kind = `Constructor }
+        summarize is_public_of_loc x >>| fun x -> 
+          { x with Query_protocol.outline_kind = `Constructor }
       )
     in
     let deprecated = Type_utils.is_deprecated te.tyext_attributes in
-    Some { Query_protocol. outline_name = name; outline_kind = `Type
+    Some { Query_protocol. is_public; outline_name = name; outline_kind = `Type
          ; outline_type = None; location; children; deprecated }
 
   | Extension_constructor ec ->
@@ -131,17 +133,20 @@ let rec summarize node =
 
   | Class_declaration cd ->
     let children =
-      List.concat_map (Lazy.force node.t_children) ~f:get_class_elements
+      List.concat_map 
+        (Lazy.force node.t_children) 
+        ~f:(get_class_elements is_public_of_loc)
     in
     let deprecated = Type_utils.is_deprecated cd.ci_attributes in
     Some (mk ~children ~location `Class None cd.ci_id_class_type ~deprecated)
 
   | _ -> None
 
-and get_class_elements node =
+and get_class_elements is_public_of_loc node =
+  let is_public = is_public_of_loc node.t_loc in
   match node.t_node with
   | Class_expr _ ->
-    List.concat_map (Lazy.force node.t_children) ~f:get_class_elements
+    List.concat_map (Lazy.force node.t_children) ~f:(get_class_elements is_public_of_loc)
   | Class_structure _ ->
     List.filter_map (Lazy.force node.t_children) ~f:(fun child ->
       match child.t_node with
@@ -150,6 +155,7 @@ and get_class_elements node =
         | Some (str_loc, outline_kind) ->
           let deprecated = Type_utils.is_deprecated cf.cf_attributes in
           Some { Query_protocol.
+            is_public;
             outline_name = str_loc.Location.txt;
             outline_kind;
             outline_type = None;
@@ -163,25 +169,89 @@ and get_class_elements node =
     )
   | _ -> []
 
-and get_mod_children node =
-  List.concat_map (Lazy.force node.t_children) ~f:remove_mod_indir
+and get_mod_children is_public_of_loc node =
+  List.concat_map (Lazy.force node.t_children) ~f:(remove_mod_indir is_public_of_loc)
 
-and remove_mod_indir node =
+and remove_mod_indir is_public_of_loc node =
   match node.t_node with
   | Module_expr _
   | Module_type _ ->
-    List.concat_map (Lazy.force node.t_children) ~f:remove_mod_indir
-  | _ -> remove_top_indir node
+    List.concat_map (Lazy.force node.t_children) ~f:(remove_mod_indir is_public_of_loc)
+  | _ -> remove_top_indir is_public_of_loc node
 
-and remove_top_indir t =
+and remove_top_indir is_public_of_loc t =
   match t.t_node with
   | Structure _
-  | Signature _ -> List.concat_map ~f:remove_top_indir (Lazy.force t.t_children)
+  | Signature _ -> 
+      List.concat_map ~f:(remove_top_indir is_public_of_loc) (Lazy.force t.t_children)
   | Signature_item _
-  | Structure_item _ -> List.filter_map (Lazy.force t.t_children) ~f:summarize
+  | Structure_item _ -> 
+      List.filter_map (Lazy.force t.t_children) ~f:(summarize is_public_of_loc)
   | _ -> []
 
-let get browses = List.concat @@ List.rev_map ~f:remove_top_indir browses
+let build_index ~end_pos ~config ~env ~local_defs dclsig = 
+  let r =
+  List.filter_map dclsig ~f:Types.(
+    function 
+    | Sig_value (ident, _, _) ->
+        let name = Ident.name ident in
+        let locate = 
+          Locate.from_string
+            ~config ~env ~local_defs ~pos:end_pos `ML name
+        in
+        ( match locate with
+          | `Found (_, _file, pos) -> Some pos 
+          | _ -> failwith "oupsi" ) 
+    | _ -> None) 
+  in
+  Printf.eprintf "Built index of size %s\n%!" 
+  (r |> List.map ~f:(Lexing.print_position ()) |> String.concat ~sep:"| ")   ;
+  r
+let is_public_of_loc ~end_pos ~config ~env ~local_defs ~sourcefile ~modulename = 
+  let sourceintf =
+    Filename.remove_extension sourcefile ^ !Config.interface_suffix
+  in
+  if not @@ Sys.file_exists sourceintf then (
+    Printf.printf "%s mli not found\n%!" sourceintf;
+    (fun _ -> false) )
+  else begin
+    let cmi_name = "merlin_analysis__" ^ modulename ^ ".cmi" in
+    let modulename = "Merlin_analysis__" ^ modulename in
+    try
+      let intf_file = Load_path.find_uncap cmi_name in
+      let dclsig = Env.read_signature modulename intf_file in
+      let index = build_index ~end_pos ~config ~env ~local_defs dclsig in
+      ( fun loc -> 
+        List.exists 
+          ~f:( fun pos ->
+            let start = loc.Warnings.loc_start in
+            let end_ = loc.Warnings.loc_end in
+            Lexing.compare_pos start pos <= 0 && Lexing.compare_pos end_ pos >= 0 
+          )
+          index
+      )
+    with Not_found -> (
+      Printf.printf "%s cmi not found\n%!" cmi_name ;
+      (fun _ -> false) )
+  end
+
+let get ~pipeline browses = 
+  let end_pos = Mpipeline.get_lexing_pos pipeline `End in
+  let config = Mpipeline.final_config pipeline in
+  let sourcefile = config.query.directory ^ "/" ^ config.query.filename in
+  let typer = Mpipeline.typer_result pipeline in
+  let env =
+    match Mtyper.get_typedtree typer with
+    | `Implementation structure -> structure.str_final_env
+    | `Interface signature -> signature.sig_final_env
+  in
+  
+  let modulename = Env.get_unit_name () in
+  let local_defs = Mtyper.get_typedtree typer in
+  let is_public_of_loc = 
+    is_public_of_loc ~end_pos ~config ~env ~local_defs ~sourcefile ~modulename
+  in
+  List.concat @@ List.rev_map ~f:(remove_top_indir is_public_of_loc) browses
 
 let shape cursor nodes =
   let rec aux node =

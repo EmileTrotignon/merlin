@@ -309,8 +309,9 @@ let json_of_completions {Compl. entries; context } =
   ]
 
 let rec json_of_outline outline =
-  let json_of_item { outline_name ; outline_kind ; outline_type; location ; children ; deprecated } =
+  let json_of_item { outline_name ; outline_kind ; outline_type; location ; children ; deprecated; is_public } =
     with_location location [
+      "is_public", `Bool is_public;
       "name", `String outline_name;
       "kind", `String (string_of_completion_kind outline_kind);
       "type", (match outline_type with

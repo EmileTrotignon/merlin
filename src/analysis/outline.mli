@@ -26,5 +26,5 @@
 
 )* }}} *)
 
-val get : Browse_tree.t list -> Query_protocol.outline
+val get : pipeline:Mpipeline.t -> Browse_tree.t list -> Query_protocol.outline
 val shape : Lexing.position -> Browse_tree.t list -> Query_protocol.shape list

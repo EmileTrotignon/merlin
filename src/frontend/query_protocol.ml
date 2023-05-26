@@ -79,6 +79,7 @@ and item = {
     | `Class
     | `Method
   ];
+  is_public:bool;
   outline_type : string option ;
   deprecated : bool ;
   location : Location_aux.t ;
